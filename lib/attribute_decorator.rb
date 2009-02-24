@@ -131,7 +131,12 @@ module AttributeDecorator
   def define_attribute_decorator_reader(attr, options)
     class_eval do
       define_method(attr) do
-        (options[:class] ||= options[:class_name].constantize).new(*options[:decorates].map { |attribute| read_attribute(attribute) })
+        decorator = (options[:class] ||= options[:class_name].constantize).new(*options[:decorates].map { |attribute| read_attribute(attribute) })
+        if decorator.respond_to?(:decorated_object)
+          decorator.decorated_object = self
+          decorator.decorator_changed = "#{attr}=".to_sym
+        end
+        decorator
       end
     end
   end
@@ -147,6 +152,49 @@ module AttributeDecorator
         values = (options[:class] ||= options[:class_name].constantize).parse(value).to_a
         options[:decorates].each_with_index { |attribute, index| write_attribute attribute, values[index] }
         value
+      end
+    end
+  end
+
+  # Adds callback processing for a decorator object so the underlying object
+  # is informed of changes to the composite object.
+  #
+  #   class CompositeDate
+  #     extend AttributeDecorator
+  #     attr_accessor :day, :month, :year
+  #     attr_decorator_update :day=, :month=, :year=, :set_date
+  #
+  #     #... other routines as above, plus:
+  #
+  #     def set_date(day, month, year)
+  #       @day, @month, @year = day, month, year
+  #     end
+  #   end
+  #
+  #   class Artist < ActiveRecord::Base
+  #     extend AttributeDecorator
+  #
+  #     attribute_decorator :date_of_birth, :class_name => 'CompositeDate', :decorates => [:day, :month, :year]
+  #     validates_decorator :date_of_birth, :message => 'is not a valid date'
+  #   end
+  #
+  #   artist = Artist.new
+  #   artist.date_of_birth = '31-12-1999'
+  #   artist.date_of_birth.day = 15
+  #   artist.date_of_birth #=> '15-12-1999'
+  #   artist.date_of_birth.set_date(4,1,2010)
+  #   artist.date_of_birth #=> '04-01-2010'
+  #
+  def attr_decorator_update(*attrs)
+    attr_accessor :decorated_object, :decorator_changed
+    attrs.each do |attr_sym|
+      old_sym = "pre_dec_#{attr_sym.to_s}".to_sym
+      alias_method old_sym, attr_sym
+      define_method(attr_sym) do |*args|
+        self.send(old_sym, *args)
+        if decorated_object
+          decorated_object.send(decorator_changed, self)
+        end
       end
     end
   end
